@@ -40,7 +40,8 @@ class PushEventHook(BaseEventHook):
         commits = self.payload.get("commits", [])
         for commit in commits:
             message = commit.get("message", None)
-            self._process_message(message, None)
+            gitlab_user_email = commit.get('author', {}).get('email', None);
+            self._process_message(message, gitlab_user_email)
 
     def _process_message(self, message, gitlab_user):
         """
@@ -96,12 +97,14 @@ def replace_gitlab_references(project_url, wiki_text):
 
 class IssuesEventHook(BaseEventHook):
     def process_event(self):
-        if self.payload.get('object_attributes', {}).get("action", "") != "open":
-            return
+        #if self.payload.get('object_attributes', {}).get("action", "") != "open":
+        #    return
 
         subject = self.payload.get('object_attributes', {}).get('title', None)
         description = self.payload.get('object_attributes', {}).get('description', None)
         gitlab_reference = self.payload.get('object_attributes', {}).get('url', None)
+        gitlab_issue_action = self.payload.get('object_attributes', {}).get('action', None)
+        gitlab_user = self.payload.get('user', {}).get('username', None);
 
         project_url = None
         if gitlab_reference:
@@ -110,18 +113,67 @@ class IssuesEventHook(BaseEventHook):
         if not all([subject, gitlab_reference, project_url]):
             raise ActionSyntaxException(_("Invalid issue information"))
 
-        issue = Issue.objects.create(
-            project=self.project,
-            subject=subject,
-            description=replace_gitlab_references(project_url, description),
-            status=self.project.default_issue_status,
-            type=self.project.default_issue_type,
-            severity=self.project.default_severity,
-            priority=self.project.default_priority,
-            external_reference=['gitlab', gitlab_reference],
-            owner=get_gitlab_user(None)
-        )
-        take_snapshot(issue, user=get_gitlab_user(None))
+        if gitlab_issue_action == 'open':
+            issue = Issue.objects.create(
+                project=self.project,
+                subject=subject,
+                description=replace_gitlab_references(project_url, description),
+                status=self.project.default_issue_status,
+                type=self.project.default_issue_type,
+                severity=self.project.default_severity,
+                priority=self.project.default_priority,
+                external_reference=['gitlab', gitlab_reference],
+                owner=get_gitlab_user(gitlab_user)
+            )
+            take_snapshot(issue, user=get_gitlab_user(gitlab_user))
 
-        snapshot = take_snapshot(issue, comment="Created from GitLab", user=get_gitlab_user(None))
-        send_notifications(issue, history=snapshot)
+            snapshot = take_snapshot(issue, comment="Created from GitLab", user=get_gitlab_user(gitlab_user))
+            send_notifications(issue, history=snapshot)
+
+        elif gitlab_issue_action == 'closed' or gitlab_issue_action == 'close':
+           issue = None
+           try:
+              issue = Issue.objects.get(external_reference=['gitlab', gitlab_reference])
+           except Issue.DoesNotExist:
+              pass
+
+           if issue is not None:
+              try:
+                 status = IssueStatus.objects.get(project=self.project, slug="closed")
+              except IssueStatus.DoesNotExist:
+                 raise ActionSyntaxException(_("The status doesn't exist"))
+
+              issue.status = status
+              issue.save()
+
+              snapshot = take_snapshot(issue,
+                                comment="Status closed from GitLab",
+                                user=get_gitlab_user(gitlab_user))
+              send_notifications(issue, history=snapshot)
+
+           else:
+               raise ActionSyntaxException(_("Issue not found"))
+
+        elif gitlab_issue_action == 'reopen' or gitlab_issue_action == 'reopened':
+           issue = None
+           try:
+              issue = Issue.objects.get(external_reference=['gitlab', gitlab_reference])
+           except Issue.DoesNotExist:
+              pass
+
+           if issue is not None:
+              try:
+                 status = IssueStatus.objects.get(project=self.project, slug="new")
+              except IssueStatus.DoesNotExist:
+                 raise ActionSyntaxException(_("The status doesn't exist"))
+
+              issue.status = status
+              issue.save()
+
+              snapshot = take_snapshot(issue,
+                                comment="Status reopened from GitLab",
+                                user=get_gitlab_user(gitlab_user))
+              send_notifications(issue, history=snapshot)
+
+           else:
+               raise ActionSyntaxException(_("Issue not found"))
