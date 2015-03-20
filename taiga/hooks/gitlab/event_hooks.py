@@ -104,6 +104,7 @@ class IssuesEventHook(BaseEventHook):
         description = self.payload.get('object_attributes', {}).get('description', None)
         gitlab_reference = self.payload.get('object_attributes', {}).get('url', None)
         gitlab_issue_action = self.payload.get('object_attributes', {}).get('action', None)
+        gitlab_issue_state = self.payload.get('object_attributes', {}).get('state', None)
         gitlab_user = self.payload.get('user', {}).get('username', None);
 
         project_url = None
@@ -130,10 +131,12 @@ class IssuesEventHook(BaseEventHook):
             snapshot = take_snapshot(issue, comment="Created from GitLab", user=get_gitlab_user(gitlab_user))
             send_notifications(issue, history=snapshot)
 
-        elif gitlab_issue_action == 'closed' or gitlab_issue_action == 'close':
+        elif gitlab_issue_action == 'close':
            issue = None
            try:
-              issue = Issue.objects.get(external_reference=['gitlab', gitlab_reference])
+              issues = Issue.objects.filter(project=self.project,external_reference=['gitlab', gitlab_reference])
+              for item in list(issues):
+                 issue = item
            except Issue.DoesNotExist:
               pass
 
@@ -152,12 +155,32 @@ class IssuesEventHook(BaseEventHook):
               send_notifications(issue, history=snapshot)
 
            else:
-               raise ActionSyntaxException(_("Issue not found"))
+              try:
+                 closedStatus = IssueStatus.objects.get(project=self.project, slug="closed")
+              except IssueStatus.DoesNotExist:
+                 raise ActionSyntaxException(_("The status doesn't exist"))
+              issue = Issue.objects.create(
+                   project=self.project,
+                   subject=subject,
+                   description=replace_gitlab_references(project_url, description),
+                   status=closedStatus,
+                   type=self.project.default_issue_type,
+                   severity=self.project.default_severity,
+                   priority=self.project.default_priority,
+                   external_reference=['gitlab', gitlab_reference],
+                   owner=get_gitlab_user(gitlab_user)
+               )
+              take_snapshot(issue, user=get_gitlab_user(gitlab_user))
 
-        elif gitlab_issue_action == 'reopen' or gitlab_issue_action == 'reopened':
+              snapshot = take_snapshot(issue, comment="Created and Closed from GitLab", user=get_gitlab_user(gitlab_user))
+              send_notifications(issue, history=snapshot)
+
+        elif gitlab_issue_state == 'reopened' or gitlab_issue_action == 'reopen':
            issue = None
            try:
-              issue = Issue.objects.get(external_reference=['gitlab', gitlab_reference])
+              issues = Issue.objects.filter(project=self.project,external_reference=['gitlab', gitlab_reference])
+              for item in list(issues):
+                 issue = item
            except Issue.DoesNotExist:
               pass
 
@@ -176,4 +199,18 @@ class IssuesEventHook(BaseEventHook):
               send_notifications(issue, history=snapshot)
 
            else:
-               raise ActionSyntaxException(_("Issue not found"))
+              issue = Issue.objects.create(
+                   project=self.project,
+                   subject=subject,
+                   description=replace_gitlab_references(project_url, description),
+                   status=self.project.default_issue_status,
+                   type=self.project.default_issue_type,
+                   severity=self.project.default_severity,
+                   priority=self.project.default_priority,
+                   external_reference=['gitlab', gitlab_reference],
+                   owner=get_gitlab_user(gitlab_user)
+               )
+              take_snapshot(issue, user=get_gitlab_user(gitlab_user))
+
+              snapshot = take_snapshot(issue, comment="Created and Closed from GitLab", user=get_gitlab_user(gitlab_user))
+              send_notifications(issue, history=snapshot)
